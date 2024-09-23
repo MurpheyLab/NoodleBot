@@ -1,0 +1,56 @@
+default:
+    env_name: "RealSwimmer"
+    max_steps: 1000
+    max_frames: 50000 # 50 episodes
+    reward_scale: 1.
+    batch_size: 128
+    init_w: !!float 3e-2
+    # model
+    model_lr: !!float 3e-4
+    model_iter: 5
+    model_layers: [200,200]
+    reward_layers: [200,200]
+    model_activation_fun: 'ReLU'
+    reward_activation_fun: 'ReLU'
+    # policy
+    policy_lr: !!float 3e-4
+    value_lr: !!float 3e-4
+    soft_q_lr: !!float 3e-4
+    activation_fun: 'ReLU'
+    hidden_dim: [200,200]
+    hidden_dim_sac: [200,200]
+
+maxdiff:
+    planner:
+        explr_dim: [0,1,5,6]
+        weights: [1.,1.,0.05,0.05]
+        horizon: 20
+        alpha: 15.
+        lam: 0.1
+        samples: 1000
+        window: False
+        eps: 0.5
+        autoscale_alpha: True
+    name_mod: "_H20" 
+    
+mppi:
+    planner:
+        horizon: 20
+        samples: 1000
+        lam: 0.1
+        eps: 0.5
+        control_variance_term: True
+    name_mod: "_H20"
+
+sac_orig:
+    reward_scale: 10
+    name_mod: '_rew10'
+
+hlt:
+    planner:
+        horizon: 20
+        samples: 1000
+        lam: 0.1
+        cost_to_go: True
+    reward_scale: 10.0
+    name_mod: '_H20_rew10'

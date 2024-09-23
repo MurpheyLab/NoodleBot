@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+
+import time
+import numpy as np
+import rospy
+import tf
+from tf_conversions import transformations
+from std_msgs.msg import Empty
+from noodlebot.msg import swimmer_info, swimmer_reset, swimmer_command
+from roscpp.srv import SetLoggerLevel
+
+class DummmySwimmer(object):
+    def __init__(self): 
+
+        self.current_joint_pose = np.zeros(2) # (servo1, servo2)
+        self.current_joint_vel = np.zeros(2)
+
+        # coming from the GPS system
+        self.current_pose = np.zeros(3) # (x, y, yaw/theta)
+        self.current_pose = np.zeros(3) # (x, y, yaw/theta)
+        self.current_vel = np.zeros(3)
+        self.got_april_tags = False
+        self.dt = 0.25
+
+        rospy.init_node('FakeSwimmer')
+        self.state_pub  = rospy.Publisher('/joint_swimmer_info', swimmer_info, queue_size=1)
+        self.setup_pub  = rospy.Publisher('/setup_info', Empty, queue_size=1)
+        rospy.Subscriber('/servo_reset', swimmer_reset,self.start)
+        rospy.Subscriber('/episode_done', Empty,self.stop)
+        self.pub_joint_info = False
+
+        self.use_tags = rospy.get_param('~test_tags',False)
+
+        self.got_april_tags = True
+        if self.use_tags: 
+            for node in ['apriltag_ros_continuous_node1','usb_cam1','rosout']:
+                logger = rospy.ServiceProxy(f'/{node}/set_logger_level', SetLoggerLevel)
+                logger('ros','error')
+                logger('ros.roscpp.superdebug','error')
+
+            self.got_april_tags = False
+            self.listener = tf.TransformListener() # default = interpoation: True, cache_duration = 10.0
+
+            # wait to find first transforms 
+            start = time.time()
+
+            while time.time() - start < 10.: 
+                self.get_transforms(print_debug=False)
+                if self.got_april_tags: 
+                    break 
+                time.sleep(0.1)
+            if not self.got_april_tags: 
+                raise TimeoutError("Check that all april tags are visible, didn't any tags")
+
+        print('swimmer env setup complete')
+
+    def start(self,msg):
+        self.pub_joint_info = True
+
+    def stop(self,msg):
+        self.pub_joint_info = False
+
+    def get_transforms(self,print_debug=True):
+        x_idx = 0
+        y_idx = 1
+        angle_idx = 2
+        name = 'swimmer'
+        try:
+            # lookupTransform(target_frame, source_frame, time) -> (position, quaternion)
+            current_pos, current_orn = self.listener.lookupTransform(name,'world',rospy.Time(0))
+            current_rpy = np.asarray(transformations.euler_from_quaternion(current_orn))
+
+            test = current_pos[x_idx] # try to see if you can access item before saving it to state
+
+            # lookupTwist(tracking_frame, observation_frame, time, averaging_interval) -> (position, quaternion)
+            linear_vel, angular_vel = self.listener.lookupTwist(name,'world',rospy.Time(0),rospy.Duration(self.dt*4))
+
+            test = linear_vel[x_idx] # try to see if you can access item before saving it to state
+
+            self.current_pose[0] = current_pos[x_idx]
+            self.current_pose[1] = current_pos[y_idx]
+            self.current_pose[2] = current_rpy[angle_idx]
+            self.current_vel[0] = linear_vel[x_idx]
+            self.current_vel[1] = linear_vel[y_idx]
+            self.current_vel[2] = angular_vel[angle_idx]
+
+            self.got_april_tags = True
+        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+            if print_debug:
+                print("Check that all april tags are visible, didn't see tag for:",name)
+            pass
+
+
+    def step(self):
+        if not(self.pub_joint_info):
+            self.setup_pub.publish()
+        else:
+            if self.use_tags:
+                self.get_transforms()
+            else: 
+                self.got_april_tags = True 
+            if self.got_april_tags:
+                state_msg = swimmer_info()
+                state_msg.joint1pos = self.current_joint_pose[0]
+                state_msg.joint2pos = self.current_joint_pose[1]
+                state_msg.joint1vel = self.current_joint_vel[0]
+                state_msg.joint2vel = self.current_joint_vel[1]
+                state_msg.swimmer_x = self.current_pose[0]
+                state_msg.swimmer_y = self.current_pose[1]
+                state_msg.swimmer_direction = self.current_pose[2]
+                state_msg.swimmervel_x = self.current_vel[0]
+                state_msg.swimmervel_y = self.current_vel[1]
+                state_msg.swimmervel_ang = self.current_vel[2]
+                state_msg.hedgehog_count = 0
+                self.state_pub.publish(state_msg)
+                self.got_april_tags = False
+
+if __name__== '__main__':
+    test = DummmySwimmer()
+    rate = rospy.Rate(10)
+    done = False
+    print('Dummy swimmer is running')
+    while not rospy.is_shutdown() and not done:
+        test.step()
+        rate.sleep()

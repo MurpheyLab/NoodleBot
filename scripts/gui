@@ -1,0 +1,97 @@
+#!/usr/bin/env python
+
+import tkinter as tk
+import tkinter.font as tkfont
+import rospy
+from std_msgs.msg import Empty, String
+import signal
+import argparse
+import datetime
+
+class testGUI():
+    def __init__(self):
+
+        self.master = tk.Tk()  # create parent window
+
+        self.master.title('ROS Topics GUI')
+        self.root = tk.Frame(self.master)
+        myFont = tkfont.Font(family='Arial', size=16)
+
+        self.buttons = argparse.Namespace()
+
+
+        self.buttons.pause = tk.Button(self.root, text="PAUSE", command=self.pause,bg='#800000',fg='white',font=myFont,width=7)
+        self.buttons.pause.grid(row=1,column=0, padx=5, pady=5, columnspan = 1)
+
+        self.buttons.resume = tk.Button(self.root, text="RESUME", command=self.resume,bg='#008000',fg='white',font=myFont,width=7)
+        self.buttons.resume.grid(row=1,column=1, padx=5, pady=5, columnspan = 1)
+
+        self.buttons.save = tk.Button(self.root, text="SAVE", command=self.save,bg='#CCCCFF',font=myFont,width=7)
+        self.buttons.save.grid(row=1,column=2, padx=5, pady=5)
+
+        self.buttons.ep = tk.Button(self.root, text="START\nEPISODE", command=self.start_ep,bg='#FF7F50',font=myFont,width=7)
+        self.buttons.ep.grid(row=3,column=0, padx=5, pady=5, columnspan = 2)
+
+        self.buttons.eval = tk.Button(self.root, text="START\nEVAL", command=self.start_ev, bg='#FFBF00',font=myFont,width=7)
+        self.buttons.eval.grid(row=3,column=1, padx=5, pady=5, columnspan = 2)
+        
+        error_label = tk.Label(self.root, text="ERROR MESSAGES", font=myFont)
+        error_label.grid(row=4,column=0,columnspan = 3, pady=5)
+
+        self.error_msg = tk.StringVar()
+        self.error_msg.set('None')
+        self.msg = ''
+
+        error = tk.Label(self.root, textvariable = self.error_msg, font=tkfont.Font(family='Arial', size=12))
+        error.grid(row=5,column=0,columnspan = 3, pady=5)
+
+        self.master.protocol('WM_DELETE_WINDOW', self.quit)  # root is your root window
+
+        self.root.pack()
+
+        self.master.resizable(False,False)
+    
+        # ros
+        rospy.init_node('gui', anonymous=True)
+        self.start_episode = rospy.Publisher('/start_episode',Empty,queue_size=1)
+        self.start_eval = rospy.Publisher('/start_eval',Empty,queue_size=1)
+        self.pause_pub = rospy.Publisher('/pause',Empty,queue_size=1)
+        self.resume_pub = rospy.Publisher('/resume',Empty,queue_size=1)
+        self.save_pub = rospy.Publisher('/save_checkpoint',Empty,queue_size=1)
+        rospy.Subscriber('/error',String,self.errorCallback,queue_size=1)
+
+
+    def errorCallback(self,msg): 
+        time = str( datetime.datetime.now().time())     
+        self.msg  = time + ' | ' + msg.data + '\n' +  self.msg
+        self.error_msg.set(self.msg)
+
+    def start(self):
+        self.master.mainloop()
+
+    def pause(self):
+        self.pause_pub.publish()
+
+    def resume(self):
+        self.resume_pub.publish()
+
+    def save(self):
+        self.save_pub.publish()
+
+    def start_ep(self):
+        self.start_episode.publish()
+
+    def start_ev(self):
+        self.start_eval.publish()
+
+    def quit(self,sig1=None,sig2=None):
+        self.root.quit()
+        self.root.destroy()
+        rospy.signal_shutdown('GUI shutdown')
+
+if __name__ == '__main__':
+
+    # setup node
+    gui = testGUI()
+    signal.signal(signal.SIGINT, gui.quit)
+    gui.start()

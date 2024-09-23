@@ -1,0 +1,41 @@
+<?xml version="1.0" ?>
+<robot name="converted_robot">
+   <link name="torso">
+      <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+         <cylinder radius="0.1" length="1.0"/>
+      </geometry>
+      </visual>
+   </link>
+   <link name="front">
+      <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+         <cylinder radius="0.1" length="1.0"/>
+      </geometry>
+      </visual>
+   </link>
+   <link name="back">
+      <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+         <cylinder radius="0.1" length="1.0"/>
+      </geometry>
+      </visual>
+   </link>
+   <joint type="revolute" name="joint1">
+      <parent link="torso"/>
+      <child link="front"/>
+      <origin xyz="0.5 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="-1.3962634015954636" upper="1.3962634015954636" effort="100" velocity="100"/>
+   </joint>
+   <joint type="revolute" name="joint2">
+      <parent link="torso"/>
+      <child link="back"/>
+      <origin xyz="-0.5 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="-1.3962634015954636" upper="1.3962634015954636" effort="100" velocity="100"/>
+   </joint>
+</robot>

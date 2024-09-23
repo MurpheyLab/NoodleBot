@@ -1,0 +1,52 @@
+<launch>
+
+    <arg name="debug" default ="False" doc="run fake publisher (True) or run real hardware (False)"/>
+    <arg name="april_tags" default ="False" doc="run april tags launch file here (True) or run april tags launch file separately (False)"/>
+
+    <arg name="base_dir" default ="results" doc= "where to save the data (if log=True)"/>
+    <arg name="config_file" default ="swimmer_config.yaml" doc= "where to find simulation parameters" />
+    <arg name="method" default ="maxdiff"  doc="hlt, maxdiff, mppi, or sac_orig" />
+    <arg name="seed" default ="100" doc="any positive integer"/>
+    <arg name="log" default ="True" doc="save data for experiment"/>
+    <arg name="frames_before_learning" default ="0" doc="number of frames to collect before starting to learn (otherwise, batch size is used)"/>
+    <arg name="random_actions" default ="0" doc="if specified, number random frames to collect before starting to use the policy"/>
+    <arg name="cpu" default ="False" doc="only use CPU (True) or try to use GPU if available (False)"/>
+    <arg name="singleshot" default ="False"/>
+    <arg name="use_gui" default ="True"/>
+
+    <param name="april_tags" value="$(arg april_tags)" type="bool" />
+
+    <!-- This node runs rosserial connections (hardware only) -->
+    <node pkg="rosserial_python" type="serial_node.py" name="serial_node" unless="$(arg debug)">
+        <param name="port" value="tcp"/>
+        <param name="baud" value="57600"/>
+    </node>
+
+    <!-- This node runs the experiment -->
+    <node name="train" pkg="noodlebot" type="train" output="screen" required="True">
+        <!-- pass arguments above to node as rosparams -->
+        <param name="save_dir" type="str" value="$(find noodlebot)/$(arg base_dir)/"/>
+        <param name="config_path" type="str" value="$(find noodlebot)/config/$(arg config_file)"/>
+        <param name="method" type="str" value="$(arg method)" />
+        <param name="seed" type="int" value="$(arg seed)" />
+        <param name="log" type="bool" value="$(arg log)" />
+        <param name="frames_before_learning" type="int" value="$(arg frames_before_learning)" />
+        <param name="random_actions" type="int" value="$(arg random_actions)" />
+        <param name="cpu" type="bool" value="$(arg cpu)" />
+        <param name="singleshot" type="bool" value="$(arg singleshot)" />
+    </node>
+
+    <node name="gui" pkg="noodlebot" type="gui" if="$(arg use_gui)"/>
+
+    <!-- plotting -->
+    <node name="states_plot" pkg="rqt_plot" type="rqt_plot" 
+            args="/joint_swimmer_info/swimmer_x /joint_swimmer_info/swimmer_y" unless="$(arg april_tags)"/>  
+    <node name="states_plot" pkg="rqt_plot" type="rqt_plot" 
+            args="/joint_swimmer_info_at/swimmer_x /joint_swimmer_info_at/swimmer_y" if="$(arg april_tags)"/>  
+    <!-- <node name="ctrl_plot" pkg="rqt_plot" type="rqt_plot" args="/servo_cb" /> -->
+
+
+    <!-- This node runs the dummy swimmer (for debugging pre-hardware) -->
+    <node name="dummy_swimmer" pkg="noodlebot" type="dummy_swimmer" if="$(arg debug)" output="log" required="true"/>
+
+</launch>

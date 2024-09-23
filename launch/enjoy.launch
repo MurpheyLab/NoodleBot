@@ -1,0 +1,45 @@
+<launch>
+
+    <arg name="april_tags" default ="False" doc="run april tags launch file here (True) or run april tags launch file separately (False)"/>
+
+    <arg name="method" default ="maxdiff"  doc="maxdiff, mppi, or sac_orig" />
+    <arg name="load_dir" default ="results/maxdiff/Swimmer_H20/seed_13" doc= "where to load model from"/>
+    <arg name="config_file" default ="config.yaml" doc= "where to find simulation parameters" />
+    <arg name="eval_frame" default ="final" doc= "which checkpoint to load (either frame number or final)" />
+    <arg name="seed" default ="100" doc="any positive integer"/>
+    <arg name="log" default ="True" doc="save data for experiment"/>
+    <arg name="log_file_modifier" default ="_enjoy_full" doc="modifier to append to data save name"/>    
+    <arg name="cpu" default ="False" doc="only use CPU (True) or try to use GPU if available (False)"/>
+    <arg name="num_episodes" default ="5" doc="number of episodes to run"/>
+    <arg name="use_gui" default ="True"/>
+
+    <param name="april_tags" value="$(arg april_tags)" type="bool" />
+
+    <!-- This launch file runs the april tags launch file -->
+    <include file="$(find noodlebot)/launch/init_cam_n_track.launch" if="$(arg april_tags)"/>
+
+    <!-- This node runs rosserial connections (hardware only) -->
+    <node pkg="rosserial_python" type="serial_node.py" name="serial_node">
+        <param name="port" value="tcp"/>
+        <param name="baud" value="57600"/>
+    </node>
+
+    <!-- This node runs the experiment -->
+    <node name="enjoy" pkg="noodlebot" type="enjoy" output="screen" required="True">
+        <!-- pass arguments above to node as rosparams -->
+        <param name="load_dir" type="str" value="$(find noodlebot)/$(arg load_dir)/"/>
+        <param name="config_path" type="str" value="$(arg config_file)"/>
+        <param name="method" type="str" value="$(arg method)" />
+        <param name="seed" type="int" value="$(arg seed)" />
+        <param name="log" type="bool" value="$(arg log)" />
+        <param name="log_file_modifier" type="str" value="$(arg log_file_modifier)" />
+        <param name="cpu" type="bool" value="$(arg cpu)" />
+        <param name="num_episodes" type="int" value="$(arg num_episodes)" />
+    </node>
+
+    <node name="gui" pkg="noodlebot" type="gui" if="$(arg use_gui)"/>
+
+    <!-- plotting -->
+    <node name="states_plot" pkg="rqt_plot" type="rqt_plot" args="/joint_swimmer_info/swimmer_x /joint_swimmer_info/swimmer_y" />
+
+</launch>

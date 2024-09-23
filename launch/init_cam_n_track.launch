@@ -1,0 +1,61 @@
+<launch>
+
+    <arg name="image_viewer" default ="False" />
+    <arg name="rviz" default ="True" />
+    <arg name="debug" default ="False" />
+    <arg name="repeater" default ="False" />
+
+    <!-- This node launches the usb camera at video node 2 -->
+    <node name="usb_cam1" pkg="usb_cam" type="usb_cam_node" output="log" >
+        <param name="video_device" value="/dev/video2" />
+        <param name="image_width" value="1920" />
+        <param name="image_height" value="1080" />
+        <param name="pixel_format" value="mjpeg" />
+        <param name="camera_frame_id" value="usb_cam1" />
+        <param name="io_method" value="mmap"/>
+        <param name="camera_name" value="usb_cam1"/>
+    </node>
+
+    <!-- This here publishes the image  -->
+    <node name="image_view1" pkg="image_view" type="image_view" respawn="false" output="screen" if="$(arg image_viewer)">
+        <remap from="image" to="/usb_cam1/image_raw"/>
+        <param name="autosize" value="true" />
+    </node>
+
+    <!-- Here we initialize the april tag finder  -->
+
+    <arg name="launch_prefix" default="" />
+    <arg name="node_namespace1" default="apriltag_ros_continuous_node1" />
+    <arg name="camera_name1" default="/usb_cam1" />
+    <arg name="camera_frame1" default="camera1" />
+    <arg name="image_topic" default="image_raw" />
+
+    <!-- Set parameters for finding the config files -->
+    <rosparam command="load" file="$(find noodlebot)/config/tag_settings.yaml" ns="$(arg node_namespace1)" />
+    <rosparam command="load" file="$(find noodlebot)/config/tags.yaml" ns="$(arg node_namespace1)" />
+
+    <!-- Here we run the april tag node  -->
+    <node pkg="apriltag_ros" type="apriltag_ros_continuous_node" name="$(arg node_namespace1)"
+                clear_params="true" output="log" launch-prefix="$(arg launch_prefix)" >
+        <!-- Remap topics from those used in code to those on the ROS network -->
+        <remap from="image_rect" to="$(arg camera_name1)/$(arg image_topic)" />
+        <remap from="camera_info" to="$(arg camera_name1)/camera_info" />
+        <remap from="tag_detections_image" to="tag_detections_image1"/>
+        <param name="camera_frame" type="str" value="$(arg camera_frame1)" />
+        <param name="publish_tag_detections_image" type="bool" value="true" />
+    </node>
+
+    <!-- This here opens rviz  -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find noodlebot)/config/april_tags.rviz" if="$(arg rviz)" />
+
+    <!-- april tag repeater for when last tag is "old" (might not be needed) -->
+    <node pkg="experiment" name="april_tag_repeater" type="april_tag_repeater" output="screen" if="$(arg repeater)"/>
+
+    <!-- This node runs the dummy swimmer (for debugging pre-hardware) -->
+    <node name="dummy_swimmer_test" pkg="noodlebot" type="dummy_swimmer" if="$(arg debug)" output="log" required="true">
+        <param name="test_tags" type="bool" value="true" />
+    </node>
+    
+
+
+</launch>

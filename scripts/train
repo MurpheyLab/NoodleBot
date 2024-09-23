@@ -1,0 +1,501 @@
+#!/usr/bin/env python3
+
+import os
+import yaml
+from termcolor import cprint
+from datetime import datetime
+import time
+
+import torch
+import numpy as np
+import random
+import pickle
+import rospy
+
+from std_msgs.msg import Empty
+from utils import get_duration
+from test_env import SwimmerEnv
+
+class Swimmer(object): 
+    def __init__(self): 
+
+        rospy.init_node('MaxDiff')
+        self.base_dir = rospy.get_param('~save_dir','./results/')
+        self.config_path = rospy.get_param('~config_path','config.yaml')
+        self.method = rospy.get_param('~method','maxdiff')
+        self.seed = rospy.get_param('~seed',12)
+        self.log = rospy.get_param('~log',True)
+        self.frames_before_learning = rospy.get_param('~frames_before_learning',0) 
+        self.random_actions = rospy.get_param('~random_actions',0)
+        self.cpu = rospy.get_param('~cpu',False)
+        self.singleshot = rospy.get_param('~singleshot',False)
+
+        self.env = SwimmerEnv()
+        self.setup_learning() 
+        
+        self.paused = True
+        self.done = False
+        self.ep_done = False
+        self.eval = False
+        self.ep_pub = rospy.Publisher('episode_done', Empty, queue_size=1)
+        rospy.Subscriber('save_checkpoint',Empty,self.saveCallback) # send command via rosserial
+        rospy.Subscriber('pause',Empty,self.pauseCallback) # send command via rosserial
+        rospy.Subscriber('start_episode',Empty,self.startEpisodeCallback) # send command via rosserial
+        rospy.Subscriber('start_eval',Empty,self.startEvalCallback) # send command via rosserial
+        rospy.Subscriber('resume',Empty,self.startCallback) # send command via rosserial
+        rospy.Subscriber('end_test',Empty,self.doneCallback) # send command via rosserial
+        rospy.Subscriber('clear_tests',Empty,self.clearCheckpointData) # send command via rosserial
+
+        print('ready to run')
+
+    def startCallback(self,msg):
+        self.paused = False
+
+    def pauseCallback(self,msg): 
+        self.paused = True 
+        self.saveCallback(None)
+
+    def saveCallback(self,msg): 
+        # seeing if the checkpoint directory exists
+        if not os.path.exists(self.checkpoint_path):
+            os.makedirs(self.checkpoint_path)
+
+        if self.base_method == 'sac':
+            checkpoint_dict = {
+                'policy': self.policy_net.state_dict(),
+                'value_net': self.sac.value_net.state_dict(),
+                'target_value_net': self.sac.target_value_net.state_dict(),
+                'soft_q_net': self.sac.soft_q_net.state_dict(),
+                'value_optimizer':  self.sac.value_optimizer.state_dict(),
+                'soft_q_optimizer': self.sac.soft_q_optimizer.state_dict(),
+                'policy_optimizer': self.sac.policy_optimizer.state_dict(),
+                'replay_buffer': self.replay_buffer.get_all_samples(),
+                'frame_idx': self.frame_idx,
+                'reward': self.rewards,
+                'eval_reward': self.eval_rewards,
+                'episode_number': self.ep_num
+            }
+        elif self.base_method == 'hlt':
+            checkpoint_dict = {
+                # policy
+                'policy': self.policy_net.state_dict(),
+                'value_net': self.sac.value_net.state_dict(),
+                'target_value_net': self.sac.target_value_net.state_dict(),
+                'soft_q_net': self.sac.soft_q_net.state_dict(),
+                'value_optimizer':  self.sac.value_optimizer.state_dict(),
+                'soft_q_optimizer': self.sac.soft_q_optimizer.state_dict(),
+                'policy_optimizer': self.sac.policy_optimizer.state_dict(),
+                # model
+                'model': self.model.state_dict(),
+                'optimizer': self.model_optim.model_optimizer.state_dict(),
+                # both
+                'replay_buffer': self.replay_buffer.get_all_samples(),
+                'frame_idx': self.frame_idx,
+                'reward': self.rewards,
+                'eval_reward': self.eval_rewards,
+                'episode_number': self.ep_num
+            }
+        else:
+            checkpoint_dict = {
+                'model': self.model.state_dict(),
+                'optimizer': self.model_optim.model_optimizer.state_dict(),
+                'replay_buffer': self.replay_buffer.get_all_samples(),
+                'frame_idx': self.frame_idx,
+                'reward': self.rewards,
+                'eval_reward': self.eval_rewards,
+                'episode_number': self.ep_num
+            }
+        with open(self.checkpoint_path + "/checkpoint_data.pickle", "wb") as f:
+            pickle.dump(checkpoint_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        print("Checkpoint data saved")
+
+    def clearCheckpointData(self, msg):
+        with open(self.checkpoint_path + "/checkpoint_data.pickle", "wb") as f:
+            pass
+
+        # TODO: how to handle clearing the other variables?
+        # TODO: is this necessary?
+
+        self.frame_idx    = 0
+        self.rewards      = []
+        self.eval_rewards = []
+        self.ep_num       = 0
+        self.env.env_ep_num = self.ep_num
+
+        print("checkpoint data cleared")
+
+    def doneCallback(self,msg): 
+        self.done = True
+
+    def setup_learning(self): 
+
+        # load config
+        self.base_method = self.method[:3]
+
+        with open(self.config_path, 'r') as f:
+            config_dict = yaml.safe_load(f)
+            config = config_dict['default']
+            if self.method in list(config_dict.keys()):
+                config.update(config_dict[self.method])
+            else:
+                raise ValueError('method not found config file')
+
+        # set seeds
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        torch.cuda.manual_seed_all(self.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.set_flush_denormal(True)
+
+        # set torch config
+        device ='cpu'
+        if not self.cpu:
+            if torch.cuda.is_available():
+                torch.set_num_threads(1)
+                device  = 'cuda:0'
+                print('Using GPU Accel')
+            else:
+                self.cpu = True
+
+        # initialize environment
+        action_dim = self.env.action_dim
+        state_dim = self.env.state_dim
+        print('actions states',action_dim,state_dim)
+
+        # load models / policies / controllers
+        from replay_buffer import ReplayBuffer
+        replay_buffer_size = int(config['max_frames']*2)
+        self.replay_buffer = ReplayBuffer(replay_buffer_size,state_dim,action_dim)
+        self.replay_buffer.seed(self.seed)
+
+        if (self.base_method == 'sac') or (self.base_method == 'hlt'):
+            from sac_lib import PolicyNetwork, SoftActorCritic
+            self.policy_net = PolicyNetwork(state_dim, action_dim, config['hidden_dim'],device=device,init_w=config['init_w']).to(device)
+            self.sac = SoftActorCritic(policy=self.policy_net,
+                                    state_dim=state_dim,
+                                    action_dim=action_dim,
+                                    replay_buffer=self.replay_buffer,
+                                    hidden_dim=config['hidden_dim_sac'],
+                                    policy_lr=config['policy_lr'],
+                                    value_lr=config['value_lr'],
+                                    soft_q_lr=config['soft_q_lr'],
+                                    init_w=config['init_w'],
+                                    device=device)
+        if not(self.base_method == 'sac'):
+            from mpc_lib import Model, ModelOptimizer
+            model_kwargs = {'model_layers':config['model_layers'],'model_AF':config['model_activation_fun'],
+                            'reward_layers':config['reward_layers'],'reward_AF':config['reward_activation_fun'],
+                            'init_w': config['init_w']}
+            self.model = Model(state_dim, action_dim,**model_kwargs).to(device)
+            #### jit model for planner (samples)
+            with torch.no_grad():
+                inputs = (torch.rand(config['planner']['samples'],state_dim,device=device),torch.rand( config['planner']['samples'],action_dim,device=device))
+                jit_model_plan = torch.jit.trace(self.model,inputs) # set up traced model
+                primed = jit_model_plan(*inputs) # prime model
+                # print(jit_model_plan.graph)
+            #### jit model for optimizer (batch size)
+            inputs = (torch.rand(config['batch_size'],state_dim,device=device),torch.rand( config['batch_size'],action_dim,device=device))
+            jit_model_opt = torch.jit.trace(self.model,inputs) # set up traced model
+            primed = jit_model_opt(*inputs) # prime model
+            self.model_optim = ModelOptimizer(jit_model_opt, self.replay_buffer, lr=config['model_lr'],device=device)
+            if self.base_method == 'mpp':
+                from mpc_lib import PathIntegral
+                self.planner = PathIntegral(jit_model_plan,device=device,**config['planner'])
+            elif self.base_method == 'max':
+                from mpc_lib import MaxDiff
+                self.planner = MaxDiff(jit_model_plan,device=device,**config['planner'])
+            elif self.base_method == 'hlt':
+                from hlt_planner import StochPolicyWrapper
+                self.planner = StochPolicyWrapper(jit_model_plan,self.policy_net,device=device,**config['planner'])
+
+
+        self.update_H = False
+        if 'H_sequence' in config.keys():
+            self.update_H = True
+            self.H_seq_idx = 0
+            self.ready_to_update_H = False
+
+        self.update_alpha = False
+        if 'alpha_sequence' in config.keys():
+            self.update_alpha = True
+            self.alpha_seq_idx = 0
+            self.ready_to_update_alpha = False
+
+        self.update_reward = False
+        if 'reward_sequence' in config.keys():
+            self.update_reward = True
+            self.reward_seq_idx = 0
+            self.ready_to_update_reward = False
+
+        self.config = config
+        self.action_dim = action_dim 
+
+        # set up logs
+        self.start_time = time.time()
+        self.path = self.base_dir + f"/{self.method}/Swimmer{config['name_mod']}/seed_{self.seed}"
+        self.checkpoint_path = self.base_dir + f"/{self.method}/Swimmer{config['name_mod']}/seed_{self.seed}/checkpoint"
+        if os.path.exists(self.path) == False:
+            os.makedirs(self.path)
+
+        # save config yaml
+        with open(self.path+'/config.yaml', 'w') as f:
+            yaml.safe_dump(config,f)
+
+        # main simulation loop
+        self.max_frames   = config['max_frames']
+        self.max_steps    = config['max_steps'] 
+        self.reward_scale = config['reward_scale']
+        self.batch_size   = config['batch_size']
+
+        self.frame_idx    = 0
+        self.rewards      = []
+        self.eval_rewards = []
+        self.ep_num       = 0
+
+        # pretrain params
+        self.frames_before_learning = max(self.batch_size,self.frames_before_learning)
+
+        # check if there's saved data
+        if os.path.exists(self.checkpoint_path + "/checkpoint_data.pickle"):
+            
+            # reloading saved checkpoint data
+            with open(self.checkpoint_path + "/checkpoint_data.pickle", "rb") as f:
+                loading_dict = pickle.load(f)
+            
+            if (self.base_method == 'sac') or (self.base_method == 'hlt'):
+                self.policy_net.load_state_dict(loading_dict['policy'])
+                self.sac.value_net.load_state_dict(loading_dict['value_net'])
+                self.sac.target_value_net.load_state_dict(loading_dict['target_value_net'])
+                self.sac.soft_q_net.load_state_dict(loading_dict['soft_q_net'])
+                self.sac.value_optimizer.load_state_dict(loading_dict['value_optimizer'])
+                self.sac.soft_q_optimizer.load_state_dict(loading_dict['soft_q_optimizer'])
+                self.sac.policy_optimizer.load_state_dict(loading_dict['policy_optimizer'])
+            if not(self.base_method == 'sac'):
+                self.model.load_state_dict(loading_dict['model'])
+                self.model_optim.model_optimizer.load_state_dict(loading_dict['optimizer'])
+
+            self.replay_buffer.position = len(loading_dict['replay_buffer'])
+            self.replay_buffer.buffer[:self.replay_buffer.position] = loading_dict['replay_buffer']
+
+            self.frame_idx = loading_dict['frame_idx']-1
+            self.rewards = loading_dict['reward']
+            if 'eval_reward' in loading_dict.keys():
+                self.eval_rewards = loading_dict['eval_reward']
+            self.ep_num = loading_dict['episode_number']+1
+
+            for _ in range(self.ep_num):
+                np.random.randint(10,170,2)
+
+            print("Checkpoint data loaded | # episodes ", self.ep_num, " | replay buff position ", self.replay_buffer.position, " | frame # ", self.frame_idx)
+        else: 
+            print("No previous data")
+
+    def startEpisodeCallback(self,msg): 
+        self.env.reset()
+        self.ep_start_time = time.time()
+        self.episode_reward = 0
+        self.episode_step = 0
+        self.paused = False
+        if not(self.base_method == 'sac' ) and not(self.singleshot):
+            self.planner.reset()
+        print('Starting episode', self.ep_num)
+
+    def end_episode(self): 
+        ep_time = time.time()-self.ep_start_time
+        print('frame : {}/{}, \t {:.2f} seconds'.format(self.frame_idx, self.max_frames, ep_time))
+        if self.base_method == 'max':
+            print('ep rew', self.ep_num, self.episode_reward,self.planner.alpha.item())
+        else:
+            print('ep rew', self.ep_num, self.episode_reward)
+        self.rewards.append([self.frame_idx, self.episode_reward,self.ep_num])
+        if self.singleshot: 
+            print_step = self.frame_idx
+        else: 
+            print_step = self.episode_step
+        with open(self.path + "/rewards.txt","a") as f:
+            if self.base_method == 'max':
+                f.write('{}\t{}\t{}\t{}\t{}\n'.format(self.ep_num,self.episode_reward,print_step,ep_time,self.planner.alpha.item()))
+            else:
+                f.write('{}\t{}\t{}\t{}\n'.format(self.ep_num,self.episode_reward,print_step,ep_time))
+        if self.singleshot:
+            self.episode_reward = 0
+            self.episode_step = 0
+        else:
+            self.ep_num += 1
+            self.ep_pub.publish(Empty())
+            self.paused = True
+
+    def startEvalCallback(self,msg): 
+        self.env.reset()
+        self.ep_start_time = time.time()
+        self.episode_reward = 0
+        self.episode_step = 0
+        self.paused = False
+        self.eval = True
+        if not(self.base_method == 'sac' ) and not(self.singleshot):
+            self.planner.reset()
+        print('Starting eval episode', self.ep_num)
+
+    def end_eval(self): 
+        ep_time = time.time()-self.ep_start_time
+        print('eval ep rew {} \t {:.2f} seconds'.format(self.episode_reward,ep_time))
+        self.eval_rewards.append([self.frame_idx, self.episode_reward,self.ep_num])
+        with open(self.path + "/eval_rewards.txt","a") as f:
+            if self.base_method == 'max':
+                f.write('{}\t{}\t{}\t{}\t{}\n'.format(self.ep_num,self.episode_reward,self.episode_step,ep_time,self.planner.alpha))
+            else:
+                f.write('{}\t{}\t{}\t{}\n'.format(self.ep_num,self.episode_reward,self.episode_step,ep_time))
+        self.ep_pub.publish(Empty())
+        self.paused = True
+        self.eval = False
+
+    def update_H_fn(self,H_seq_idx):
+        cprint('updating horizon to {}'.format(self.config['H_sequence']['horizon'][H_seq_idx]),'magenta')
+        self.planner.update_horizon(self.config['H_sequence']['horizon'][H_seq_idx])
+        H_seq_idx += 1
+        update_H = False if H_seq_idx >= len(self.config['H_sequence']['steps']) else True
+        return update_H, H_seq_idx
+
+    def update_alpha_fn(self,alpha_seq_idx):
+        new_alpha = self.config['alpha_sequence']['alpha'][alpha_seq_idx]
+        cprint('updating alpha to {}'.format(new_alpha),'magenta')
+        logdet_method = 'abs' if alpha_seq_idx == 0 else None
+        self.planner.update_alpha(new_alpha,logdet_method=logdet_method)
+        alpha_seq_idx += 1
+        update_alpha = False if alpha_seq_idx >= len(self.config['alpha_sequence']['steps']) else True
+        return update_alpha, alpha_seq_idx
+
+    def update_reward_fn(self,reward_seq_idx):
+        reward_scale = self.config['reward_sequence']['reward'][reward_seq_idx]
+        cprint('updating reward scale to {}'.format(reward_scale),'magenta')
+        reward_seq_idx += 1
+        update_reward = False if reward_seq_idx >= len(self.config['reward_sequence']['steps']) else True
+        return update_reward, reward_seq_idx
+
+    def get_random_action(self):
+        return np.random.random(self.action_dim) * 2 - 1
+
+    def step(self): 
+        # get current state
+        state = self.env.state.copy()
+        # get action
+        if (not self.eval) and (self.frame_idx < self.random_actions):
+            action = self.get_random_action()
+        else:
+            if self.base_method == 'sac':
+                action = self.policy_net.get_action(state.copy(),eval=self.eval)
+            else:
+                action = self.planner(state.copy(),eval=self.eval)
+
+        if not (np.any(np.isfinite(self.env.last_state)) 
+                or np.any(np.isfinite(self.env.last_action)) 
+                or np.any(np.isfinite(state)) 
+                or np.any(np.isfinite(action))):
+            print('got nan or inf in step')
+            return False
+
+        if self.episode_step > 0:
+            # get reward
+            reward = self.env.get_reward(self.env.last_action) 
+            done = False
+
+            if not self.eval:
+                # add to buffer
+                self.replay_buffer.push(self.env.last_state, self.env.last_action, self.reward_scale * reward, state, action, done)
+
+            self.episode_reward += reward
+
+        # apply to robot
+        self.env.step(state,action)
+
+        # train
+        if (not self.eval) and (len(self.replay_buffer) > self.frames_before_learning):
+            if (self.base_method == 'sac') or (self.base_method == 'hlt'):
+                for k in range(self.config['model_iter']):
+                    self.sac.update(self.batch_size,soft_tau = 0.01, debug=((k == (self.config['model_iter']-1)) and (self.frame_idx%250==0)))
+            if not(self.base_method == 'sac'):
+                self.model_optim.update_model(self.batch_size, mini_iter=self.config['model_iter'],
+                debug=(self.frame_idx%250==0),calc_eig=False)
+
+        self.episode_step += 1
+
+        if not self.eval:
+            self.frame_idx += 1
+            if self.update_H and (self.frame_idx % self.config['H_sequence']['steps'][self.H_seq_idx] == 0):
+                self.update_H, self.H_seq_idx = self.update_H_fn(self.H_seq_idx)
+            if self.update_alpha and (self.frame_idx % self.config['alpha_sequence']['steps'][self.alpha_seq_idx] == 0):
+                self.update_alpha, self.alpha_seq_idx = self.update_alpha_fn(self.alpha_seq_idx)
+            if self.update_reward and (self.frame_idx % self.config['reward_sequence']['steps'][self.reward_seq_idx] == 0):
+                self.update_reward, self.reward_seq_idx = self.update_reward_fn(self.reward_seq_idx)
+
+        return True
+
+    def save(self,final=False): 
+
+        if final: 
+            mod = 'final' 
+        else: 
+            mod = str(self.frame_idx)
+
+        print('saving policy and reward log')
+        pickle.dump(self.rewards, open(self.path + '/reward_data.pkl', 'wb'))
+        pickle.dump(self.eval_rewards, open(self.path + '/eval_reward_data.pkl', 'wb'))
+        if (self.base_method == 'sac') or (self.base_method == 'hlt'):
+            torch.save(self.policy_net.state_dict(), self.path + '/policy_' + mod + '.pt')
+        if not(self.base_method == 'sac'):
+            torch.save(self.model.state_dict(), self.path + '/model_' + mod + '.pt')
+
+        # save buffer
+        buff = self.replay_buffer.get_all_samples()
+        pickle.dump(buff, open(self.path + '/buffer_data.pkl', 'wb'))
+
+        if final: 
+            # save duration
+            end = datetime.now()
+            date_str = end.strftime("%Y-%m-%d_%H-%M-%S/")
+            duration_str = get_duration(self.start_time)
+
+            # save config
+            with open(self.path + "/../config.txt","a") as f:
+                f.write('End Time\n')
+                f.write('\t'+ date_str + '\n')
+                f.write('Duration\n')
+                f.write('\t'+ duration_str + '\n')
+                f.close()
+
+if __name__== '__main__':
+    test = Swimmer()
+    rate = rospy.Rate(30)
+
+    while not rospy.is_shutdown() and not test.done:
+        if not test.paused and test.env.got_pose: 
+            if (test.episode_step < test.max_steps + 1): # episode is running
+                success = test.step()
+                if not success:
+                    print('got a number that is not finite')
+                    test.paused = True
+            elif (test.episode_step == test.max_steps+1):
+                if test.eval: 
+                    test.episode_step -= 1
+                    test.end_eval()
+                else:
+                    test.saveCallback(None) # save checkpoint
+                    test.episode_step -= 1
+                    if not test.singleshot:
+                        test.frame_idx -= 1
+                    if (test.frame_idx > 0) and (test.frame_idx % (test.max_frames//10) == 0):
+                        test.save()
+                    test.end_episode()
+                if not test.singleshot:
+                    print('episode is complete! reset robot and publish start_episode when ready')
+            else: 
+                print("error! ep_step is greater than max_steps")
+        
+            if test.frame_idx > test.max_frames+1: 
+                test.done = True
+        rate.sleep()
+        
+    test.save(final=True)

@@ -1,0 +1,6 @@
+src/MaxDiffRL
+results/*
+*.pyc
+*__pycache__*
+*.ipynb_checkpoints*
+notebooks/*

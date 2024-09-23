@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+
+import yaml
+import time
+
+import torch
+import numpy as np
+import random
+import pickle
+import rospy
+
+from std_msgs.msg import Empty
+from test_env import SwimmerEnv
+
+class SwimmerEnjoy(object):
+    def __init__(self):
+
+        rospy.init_node('MaxDiff')
+        self.state_dict_path = rospy.get_param('~load_dir','./data/maxdiff/SwimmerEnv_v3_H40alpha100/seed_13')
+        self.config_file = rospy.get_param('~config_file','config.yaml')
+        self.eval_frame = rospy.get_param('~eval_frame','final')
+        self.method = rospy.get_param('~method','maxdiff')
+        self.seed = rospy.get_param('~seed',12)
+        self.log = rospy.get_param('~log',True)
+        self.log_file_modifier = rospy.get_param('~log_file_modifier','_enjoy')
+        self.frames_before_learning = rospy.get_param('~frames_before_learning',0) 
+        self.random_actions = rospy.get_param('~random_actions',0)
+        self.cpu = rospy.get_param('~cpu',False)
+        self.num_episodes = rospy.get_param('~num_episodes', 1)
+        self.mod_alpha = rospy.get_param('~mod_alpha', False)
+
+        self.env = SwimmerEnv()
+        self.setupEnjoy()
+
+        self.paused = True
+        self.done = False
+        self.ep_done = False
+        self.eval = False
+
+        self.ep_pub = rospy.Publisher('episode_done', Empty, queue_size=1)
+        rospy.Subscriber('save_checkpoint',Empty,self.saveCallback) # send command via rosserial
+        rospy.Subscriber('pause',Empty,self.pauseCallback) # send command via rosserial
+        rospy.Subscriber('start_episode',Empty,self.startEnjoyCallback) # send command via rosserial
+        rospy.Subscriber('start_eval',Empty,self.startEnjoyCallback) # send command via rosserial
+        rospy.Subscriber('resume',Empty,self.startCallback) # send command via rosserial
+        print('ready to run')
+
+    def startCallback(self,msg):
+        self.paused = False
+
+    def pauseCallback(self,msg): 
+        self.paused = True 
+
+    def saveCallback(self,msg): 
+        self.save()
+
+    def setupEnjoy(self):
+        
+        # load config
+        self.base_method = self.method[:3]
+
+        with open(self.state_dict_path + self.config_file, 'r') as f:
+            config = yaml.safe_load(f)
+
+        if self.base_method == 'max':
+            if self.mod_alpha: 
+                config['planner']['autoscale_alpha'] = False
+                config['planner']['alpha'] = 10.
+            else: 
+                self.eval = False
+
+        if self.eval_frame == -1: 
+            self.eval_frame = "final"
+
+        # set seeds
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        torch.cuda.manual_seed_all(self.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.set_flush_denormal(True)
+
+        # set torch config
+        device ='cpu'
+        if not self.cpu:
+            if torch.cuda.is_available():
+                torch.set_num_threads(1)
+                device  = 'cuda:0'
+                print('Using GPU Accel')
+            else:
+                self.cpu = True
+
+        # initialize environment
+        action_dim = self.env.action_dim
+        state_dim = self.env.state_dim
+        print('actions states',action_dim,state_dim)
+
+        # load models / policies / controllers
+        from replay_buffer import ReplayBuffer
+        replay_buffer_size = int(config['max_frames']*2)
+        self.replay_buffer = ReplayBuffer(replay_buffer_size,state_dim,action_dim)
+        self.replay_buffer.seed(self.seed)
+
+        if (self.base_method == 'sac') or (self.base_method == 'hlt'):
+            from sac_lib import PolicyNetwork
+            self.policy_net = PolicyNetwork(state_dim, action_dim, config['hidden_dim'],device=device).to(device)
+            self.policy_net.load_state_dict(torch.load(self.state_dict_path+'policy_{}.pt'.format(self.eval_frame), map_location=device))
+        if not(self.base_method == 'sac'):
+            from mpc_lib import Model
+            model_kwargs = {'model_layers':config['model_layers'],'model_AF':config['model_activation_fun'],
+                            'reward_layers':config['reward_layers'],'reward_AF':config['reward_activation_fun']}
+            self.model = Model(state_dim, action_dim,**model_kwargs).to(device)
+            self.model.load_state_dict(torch.load(self.state_dict_path+'model_{}.pt'.format(self.eval_frame), map_location=device))
+            #### jit model for planner (samples)
+            with torch.no_grad():
+                inputs = (torch.rand(config['planner']['samples'],state_dim,device=device),torch.rand( config['planner']['samples'],action_dim,device=device))
+                jit_model_plan = torch.jit.trace(self.model,inputs) # set up traced model
+                primed = jit_model_plan(*inputs) # prime model
+                # print(jit_model_plan.graph)
+            if self.base_method == 'mpp':
+                from mpc_lib import PathIntegral
+                self.planner = PathIntegral(jit_model_plan,device=device,**config['planner'])
+            elif self.base_method == 'max':
+                from mpc_lib import MaxDiff
+                self.planner = MaxDiff(jit_model_plan,device=device,**config['planner'])
+            elif self.base_method == 'hlt':
+                from hlt_planner import StochPolicyWrapper
+                self.planner = StochPolicyWrapper(jit_model_plan,self.policy_net,device=device,**config['planner'])
+
+        # main simulation loop
+        self.max_frames   = config['max_steps']* self.num_episodes
+        self.max_steps    = config['max_steps'] 
+        self.reward_scale = config['reward_scale']
+        self.frame_idx    = 0
+        self.rewards      = []
+        self.ep_num       = 0
+
+    def startEnjoyCallback(self, msg):
+        self.env.reset()
+        self.ep_start_time = time.time()
+        self.episode_reward = 0
+        self.episode_step = 0
+        self.paused = False
+        if not(self.base_method == 'sac' ):
+            self.planner.reset()
+        print("starting enjoy")
+
+    def end_episode(self): 
+        ep_time = time.time()-self.ep_start_time
+        print('frame : {}/{}, \t {:.2f} seconds'.format(self.frame_idx, self.max_frames, ep_time))
+        if self.base_method == 'max':
+            print('enjoy rew', self.ep_num, self.episode_reward,self.planner.alpha.item())
+        else:
+            print('enjoy rew', self.ep_num, self.episode_reward)
+        self.rewards.append([self.frame_idx, self.episode_reward,self.ep_num])
+        with open(self.state_dict_path + f"/rewards{self.log_file_modifier}.txt","a") as f:
+            if self.base_method == 'max':
+                f.write('{}\t{}\t{}\t{}\t{}\n'.format(self.ep_num,self.episode_reward,self.episode_step,ep_time,self.planner.alpha.item()))
+            else:
+                f.write('{}\t{}\t{}\t{}\n'.format(self.ep_num,self.episode_reward,self.episode_step,ep_time))
+        self.ep_num += 1
+        self.ep_pub.publish(Empty())
+        self.paused = True
+
+    def step(self): 
+        # get current state
+        state = self.env.state.copy()
+        # get action
+        if self.base_method == 'sac':
+            action = self.policy_net.get_action(state.copy(),eval=self.eval)
+        else:
+            action = self.planner(state.copy(),eval=self.eval)
+
+        if not (np.any(np.isfinite(self.env.last_state)) 
+                or np.any(np.isfinite(self.env.last_action)) 
+                or np.any(np.isfinite(state)) 
+                or np.any(np.isfinite(action))):
+            print('got nan or inf in step')
+            return False
+
+        if self.episode_step > 0:
+            # get reward
+            reward = self.env.get_reward(self.env.last_action) 
+            done = False
+
+            # add to buffer
+            self.replay_buffer.push(self.env.last_state, self.env.last_action, self.reward_scale * reward, state, action, done)
+
+            self.episode_reward += reward
+
+        # apply to robot
+        self.env.step(state,action)
+
+        self.episode_step += 1
+        self.frame_idx    += 1
+        return True
+
+    def save(self): 
+
+        print('saving cumulative reward')
+        pickle.dump(self.rewards, open(self.state_dict_path + f'/reward_data{self.log_file_modifier}' + '.pkl', 'wb'))
+
+        # save final steps
+        buff = self.replay_buffer.get_all_samples()
+        pickle.dump(buff, open(self.state_dict_path + f'/buffer_data{self.log_file_modifier}'+ '.pkl', 'wb'))
+
+        self.ep_pub.publish(Empty())
+
+if __name__== '__main__':
+    test = SwimmerEnjoy()
+    rate = rospy.Rate(30)
+
+    while not rospy.is_shutdown() and not test.done:
+        if not test.paused and test.env.got_pose: 
+            if (test.episode_step < test.max_steps + 1): # episode is running
+                success = test.step()
+                if not success:
+                    print('got a number that is not finite')
+                    test.paused = True
+            elif (test.episode_step == test.max_steps+1):
+                test.episode_step -= 1
+                test.frame_idx -= 1
+                test.end_episode()
+                print('enjoy replay is complete!')
+            else: 
+                print("error! ep_step is greater than max_steps")
+        
+            if test.frame_idx > test.max_frames: 
+                test.done = True
+        rate.sleep()
+        
+    test.save()

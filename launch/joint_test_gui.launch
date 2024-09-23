@@ -1,0 +1,14 @@
+<launch>
+   <!-- loads urdf for joint state gui -->
+   <param name="robot_description" command="cat $(find noodlebot)/config/swimmer.urdf" />
+   <!-- runs joint gui -->
+   <node name="joint_state_publisher" pkg="joint_state_publisher_gui" type="joint_state_publisher_gui" />
+   <!-- runs nodes that passes joint states to reset function of arduino -->
+   <node name="joint_repeater" pkg="noodlebot" type="joint_repeater" />
+
+   <!-- This node runs rosserial connections (hardware only) -->
+   <node pkg="rosserial_python" type="serial_node.py" name="serial_node" required="true">
+        <param name="port" value="tcp"/>
+        <param name="baud" value="57600"/>
+    </node>
+</launch>

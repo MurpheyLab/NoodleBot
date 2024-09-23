@@ -1,0 +1,23 @@
+# # Definitions of tags to detect
+#
+# ## General remarks
+#
+# - All length in meters
+# - Ellipsis (...) signifies that the previous element can be repeated multiple times.
+#
+# ### Syntax
+#
+# standalone_tags:
+#   [
+#     {id: ID, size: SIZE, name: NAME},
+#     ...
+#   ]
+standalone_tags:
+  [
+    {id: 11, size: 0.1, name: world},
+    {id: 10, size: 0.1, name: swimmer},
+  ]
+
+tag_bundles:
+  [
+  ]
