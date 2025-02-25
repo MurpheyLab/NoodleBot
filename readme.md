@@ -1,5 +1,5 @@
 # NoodleBot
-For hardware assembly instructions, see the swimmer [readme](https://github.com/MurpheyLab/noodlebot/blob/main/swimmer/readme.md).
+For hardware assembly instructions and a description of the differences between the simulated and hardware swimmer, see the swimmer [readme](https://github.com/MurpheyLab/noodlebot/blob/main/swimmer/readme.md).
 
 <img src="https://github.com/MurpheyLab/noodlebot/blob/main/swimmer/NoodleBot.png" height="500">
 
