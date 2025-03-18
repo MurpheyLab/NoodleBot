@@ -3,5 +3,5 @@ results/*
 *.pyc
 *__pycache__*
 *.ipynb_checkpoints*
-notebooks/*
+notebooks/figs/
 *checkpoint/
