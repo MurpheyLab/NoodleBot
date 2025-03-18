@@ -1,0 +1,40 @@
+batch_size: 128
+init_w: 0.03
+max_frames: 25000
+max_steps: 1000
+method: maxdiff
+model_activation_fun: ReLU
+model_iter: 5
+model_layers:
+- 200
+- 200
+model_lr: 0.0003
+name_mod: _real2sim_H30
+noise: false
+planner:
+  alpha: 100
+  autotune_alpha: true
+  cov_method: 0
+  eps: 0.5
+  explr_dim:
+  - 0
+  - 1
+  - 6
+  - 7
+  horizon: 30
+  lam: 0.1
+  num_cov_samples: 20
+  samples: 1000
+  stoch: false
+  weights:
+  - 1.0
+  - 1.0
+  - 0.05
+  - 0.05
+  window: false
+reward_activation_fun: ReLU
+reward_layers:
+- 200
+- 200
+reward_scale: 1.0
+weights: None

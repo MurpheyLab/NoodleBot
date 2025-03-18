@@ -71,11 +71,12 @@ and save a checkpoint with  `$ rostopic pub /save_checkpoint std_msgs/Empty "{}"
 │   ├── tags.yaml                   // specifies tag numbers for world and swimmmer (april tag tracking only)
 │   ├── tag_settings.yaml           // specifies april tag family (april tag tracking only)
 │   └── usb_cam1.yaml               // provides camera calibration info (april tag tracking only)
+├── data                            // includes learned models (including singleshot, hardware, multi-shot, and single-shot experiments)
 ├── launch
 │   ├── enjoy.launch                // executes learned policies
 │   ├── init_cam_n_track.launch     // [optional] sets up april tag tracking 
 │   ├── joint_test_gui.launch       // [debug] allows user to send joint angles using gui
-│   └── train.launch                // main training program
+│   └── train.launch                // main training programconfig
 ├── msg                             // custom ROS messages to pass information between swimmer and offline compute
 │   ├── swimmer_command.msg         // control commands
 │   ├── swimmer_info.msg            // state info

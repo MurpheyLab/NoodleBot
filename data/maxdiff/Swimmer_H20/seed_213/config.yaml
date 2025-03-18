@@ -1,0 +1,44 @@
+activation_fun: ReLU
+batch_size: 128
+env_name: RealSwimmer
+hidden_dim:
+- 200
+- 200
+hidden_dim_sac:
+- 200
+- 200
+max_frames: 50000
+max_steps: 1000
+model_activation_fun: ReLU
+model_iter: 5
+model_layers:
+- 200
+- 200
+model_lr: 0.0003
+name_mod: _H20
+planner:
+  alpha: 10.0
+  autoscale_alpha: true
+  eps: 0.5
+  explr_dim:
+  - 0
+  - 1
+  - 5
+  - 6
+  horizon: 20
+  lam: 0.1
+  samples: 1000
+  weights:
+  - 1.0
+  - 1.0
+  - 0.05
+  - 0.05
+  window: false
+policy_lr: 0.0003
+reward_activation_fun: ReLU
+reward_layers:
+- 200
+- 200
+reward_scale: 1.0
+soft_q_lr: 0.0003
+value_lr: 0.0003

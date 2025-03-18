@@ -1,0 +1,23 @@
+batch_size: 128
+init_w: 0.03
+max_frames: 25000
+max_steps: 1000
+method: mppi
+model_activation_fun: ReLU
+model_iter: 5
+model_layers:
+- 200
+- 200
+model_lr: 0.0003
+name_mod: _real2sim_H30
+noise: false
+planner:
+  eps: 0.5
+  horizon: 30
+  lam: 0.1
+  samples: 1000
+reward_activation_fun: ReLU
+reward_layers:
+- 200
+- 200
+reward_scale: 1.0

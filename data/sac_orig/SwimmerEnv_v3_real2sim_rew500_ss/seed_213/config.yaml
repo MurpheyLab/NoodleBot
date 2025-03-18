@@ -1,0 +1,14 @@
+activation_fun: ReLU
+batch_size: 128
+hidden_dim: 256
+hidden_dim_sac: 256
+init_w: 0.03
+max_frames: 25000
+max_steps: 1000
+method: sac
+name_mod: _real2sim_rew500_ss
+noise: false
+policy_lr: 0.0003
+reward_scale: 500.0
+soft_q_lr: 0.0003
+value_lr: 0.0003
